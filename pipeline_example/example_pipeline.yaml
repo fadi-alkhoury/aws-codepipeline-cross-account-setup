@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  TestAccount:
+    Description: AWS account number for test account
+    Type: Number
+  ProdAccount:
+    Description: AWS AccountNumber for production account
+    Type: Number
+  ExternPipelineAccessRoleName:
+    Type: String
+  CloudformationDeployerRoleName:
+    Type: String
+  BuildImageRepo:
+    Description: Name of the repo for the docker image of the build environment
+    Type: String
+
+Resources:
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref AWS::StackName
+      EncryptionKey: !ImportValue KmsKeyArn
+      ServiceRole: !ImportValue BuildProjectRoleArn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Sub ${AWS::AccountId}.dkr.ecr.us-east-1.amazonaws.com/${BuildImageRepo}   # replace with your build image
+        ImagePullCredentialsType: SERVICE_ROLE
+        EnvironmentVariables:
+          - Name: BranchName
+            Value: !Ref AWS::StackName      # replace with the branch you would like to trigger pipeline
+          - Name: ArtifactBucket
+            Value: !ImportValue ArtifactBucket
+          - Name: KeyArn
+            Value: !ImportValue KmsKeyArn
+          - Name: ProdAccount
+            Value: !Ref ProdAccount
+          - Name: TestAccount
+            Value: !Ref TestAccount
+          - Name: ExternPipelineAccessRoleName
+            Value: !Ref ExternPipelineAccessRoleName
+          - Name: CloudformationDeployerRoleName
+            Value: !Ref CloudformationDeployerRoleName  
+      TimeoutInMinutes: 15
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - isBuildPassed=false
+                - set -e                
+                - startDir=$PWD
+
+                #--------------------------------------------------
+                # Build your code
+                #--------------------------------------------------
+                - cd path/to/lambda-function
+
+                # build and test here
+
+
+                #--------------------------------------------------
+                # Deploy to Test account and run tests
+                #--------------------------------------------------
+                - cd path/to/cloudformation-script-of-lambda
+                - aws cloudformation package --template-file my-lambda.yaml --s3-bucket $ArtifactBucket --kms-key-id $KeyArn --output-template-file packaged_lambda.yaml
+                
+                - assumeRoleOutput=$(aws sts assume-role --role-arn arn:aws:iam::${TestAccount}:role/${ExternPipelineAccessRoleName} --role-session-name codebuild_deploy_session)
+                - export AWS_ACCESS_KEY_ID=$( echo $assumeRoleOutput | jq ".Credentials.AccessKeyId" --raw-output)
+                - export AWS_SECRET_ACCESS_KEY=$( echo $assumeRoleOutput | jq ".Credentials.SecretAccessKey" --raw-output)
+                - export AWS_SESSION_TOKEN=$( echo $assumeRoleOutput | jq ".Credentials.SessionToken" --raw-output)
+
+                - |
+                  aws cloudformation deploy --stack-name my-lambda \
+                    --template-file packaged_lambda.yaml \
+                    --capabilities CAPABILITY_NAMED_IAM \
+                    --role-arn arn:aws:iam::${TestAccount}:role/${CloudformationDeployerRoleName}
+
+                # run integration tests here
+                
+                #--------------------------------------------------
+                # Deploy to Prod account
+                #--------------------------------------------------
+                - cd path/to/cloudformation-script-of-lambda
+                
+                - unset AWS_ACCESS_KEY_ID && unset AWS_SECRET_ACCESS_KEY && unset AWS_SESSION_TOKEN
+                - assumeRoleOutput=$(aws sts assume-role --role-arn arn:aws:iam::${ProdAccount}:role/${ExternPipelineAccessRoleName} --role-session-name codebuild_deploy_session)
+                - export AWS_ACCESS_KEY_ID=$( echo $assumeRoleOutput | jq ".Credentials.AccessKeyId" --raw-output)
+                - export AWS_SECRET_ACCESS_KEY=$( echo $assumeRoleOutput | jq ".Credentials.SecretAccessKey" --raw-output)
+                - export AWS_SESSION_TOKEN=$( echo $assumeRoleOutput | jq ".Credentials.SessionToken" --raw-output)
+
+                - |
+                  aws cloudformation deploy --stack-name my-lambda \
+                    --template-file packaged_lambda.yaml \
+                    --capabilities CAPABILITY_NAMED_IAM \
+                    --role-arn arn:aws:iam::${ProdAccount}:role/${CloudformationDeployerRoleName}
+
+                - unset AWS_ACCESS_KEY_ID && unset AWS_SECRET_ACCESS_KEY && unset AWS_SESSION_TOKEN
+                - isBuildPassed=true
+              finally:
+                #--------------------------------------------------
+                # Commit to master
+                #--------------------------------------------------
+                - commitId=$(aws codecommit get-branch --repository-name my-repository--branch-name $BranchName | jq  ".branch.commitId" --raw-output)
+                - commitMessage=$(aws codecommit get-commit --repository-name my-repository --commit-id $commitId | jq  ".commit.message" --raw-output)
+                - aws codecommit merge-branches-by-squash --repository-name my-repository --source-commit-specifier $BranchName --destination-commit-specifier master --commit-message "$commitMessage" --conflict-resolution-strategy ACCEPT_SOURCE 
+
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !ImportValue PipelineRoleArn
+      Name: !Ref AWS::StackName
+      ArtifactStore:
+        Type: S3
+        Location: !ImportValue ArtifactBucket
+        EncryptionKey:
+          Id: !ImportValue KmsKeyArn
+          Type: KMS
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: CheckoutRepo
+              RunOrder: 1
+              RoleArn: !ImportValue CodeCommitRoleArn
+              OutputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: CodeCommit
+              Configuration:
+                RepositoryName: my-repository    # replace with your repository
+                BranchName: !Ref AWS::StackName  # replace with the branch you would like to trigger pipeline
+                PollForSourceChanges: false
+        - Name: Build
+          Actions:
+          - Name: Build
+            RunOrder: 1
+            InputArtifacts:
+              - Name: SourceArtifact
+            OutputArtifacts:
+              - Name: BuildArtifact
+            ActionTypeId:
+              Category: Build
+              Owner: AWS
+              Version: "1"
+              Provider: CodeBuild
+            Configuration:
+              ProjectName: !Ref BuildProject
+
+  # Rule to trigger the pipeline when a commit is made
+  EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:my-repository    # replace with your repository
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref AWS::StackName     # replace with the branch you would like to trigger pipeline
+      Targets:
+        - Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}
+          RoleArn: !ImportValue CloudWatchEventRoleArn
+          Id: !Ref AWS::StackName
+          
+                

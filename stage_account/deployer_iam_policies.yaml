@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Role to be assumed by CodePipeline service cross account
+Parameters:
+  ArtifactBucket:
+    Description: S3 Bucket in Tools Account, which holds the artifacts built by codebuild
+    Type: String
+  KeyArn:
+    Description: ARN of the KMS CMK creates in Tools account
+    Type: String
+
+
+Resources:
+  ExternPipelineAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: extern_pipeline_access_policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - cloudformation:*
+              - s3:*
+              - dynamodb:*
+              - sqs:*
+              - apigateway:*
+              - iam:PassRole
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - kms:*
+            Resource: !Ref KeyArn
+      Roles:
+        - !ImportValue  ExternPipelineAccessRoleName
+
+  CFDeployerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: cloudformation_deployer_policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:AddPermission
+              - lambda:CreateFunction
+              - lambda:DeleteFunction
+              - lambda:InvokeFunction
+              - lambda:RemovePermission
+              - lambda:UpdateFunctionCode
+              - lambda:GetFunctionConfiguration
+              - lambda:GetFunction
+              - lambda:UpdateFunctionConfiguration
+              - apigateway:*
+              - events:* 
+              - iam:CreateRole
+              - iam:CreatePolicy
+              - iam:GetRole
+              - iam:DeleteRole
+              - iam:PutRolePolicy
+              - iam:PassRole
+              - iam:DeleteRolePolicy
+              - cloudformation:*
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:aws:s3:::${ArtifactBucket}
+              - !Sub arn:aws:s3:::${ArtifactBucket}/*
+          - Effect: Allow
+            Action:
+              - kms:*
+            Resource: !Ref KeyArn
+      Roles:
+        - !ImportValue CloudformationDeployerRoleName

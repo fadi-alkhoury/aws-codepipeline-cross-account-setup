@@ -1,0 +1,29 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cross Account Role to Allow Access to CodePipeline in Tools Account
+Parameters:
+  ToolsAccount:
+    Description: AWS AccountNumber for tools account
+    Type: Number
+  RoleName:
+    Description: The name of the role in the Tools account which the dev account can use
+    Type: String
+    
+Resources:
+  PipelineAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: pipeline_access_policy
+      Groups: 
+        - !Ref PipelineAccessGroup
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: !Sub arn:aws:iam::${ToolsAccount}:role/${RoleName} 
+
+  PipelineAccessGroup:
+    Type: AWS::IAM::Group
+    Properties: 
+      GroupName: PipelineAccess

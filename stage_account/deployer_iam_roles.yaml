@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Role to be assumed by CodePipeline service cross account
+Parameters:
+  ToolsAccount:
+    Description: AWS AccountNumber for Tools
+    Type: Number
+  ExternPipelineAccessRoleName:
+    Type: String
+  CloudformationDeployerRoleName:
+    Type: String
+
+
+Resources:
+  ExternPipelineAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref ExternPipelineAccessRoleName
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Ref ToolsAccount
+            Action:
+              - sts:AssumeRole
+
+  CloudformationDeployerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref CloudformationDeployerRoleName
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+Outputs:
+  ExternPipelineAccessRoleName:
+    Value: !Ref ExternPipelineAccessRole
+    Export: 
+      Name: ExternPipelineAccessRoleName
+  CloudformationDeployerRoleName:
+    Value: !Ref CloudformationDeployerRole
+    Export: 
+      Name: CloudformationDeployerRoleName

@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a CMK in KMS and grants access to other accounts
+Parameters:
+  DevAccount:
+    Description: AWS AccountNumber for dev
+    Type: Number
+
+Resources:
+  DevAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dev_account_role
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${DevAccount}:root
+            Action:
+              - sts:AssumeRole
+      
+  DevAccountPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: dev_account_pipeline_access
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - codepipeline:PutApprovalResult
+              - codepipeline:ListPipelineExecutions
+              - codepipeline:ListPipelines
+              - codepipeline:GetPipeline
+              - codepipeline:GetPipelineState
+              - codepipeline:GetPipelineExecution
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - codecommit:Get*
+              - codecommit:BatchGet*
+              - codecommit:GitPull
+              - codecommit:List*
+              - codecommit:CancelUploadArchive
+              - codecommit:UploadArchive
+              - codecommit:GitPush
+              - codecommit:PutFile
+            Resource: "*"
+          - Effect: Deny
+            Action:
+              - codecommit:GitPush
+              - codecommit:PutFile
+              - codecommit:DeleteBranch
+              - codecommit:MergePullRequestByFastForward
+            Condition:
+              "StringEqualsIfExists": 
+                'codecommit:References':
+                  - "refs/heads/master" 
+                  - "refs/heads/develop" 
+              "Null":
+                'codecommit:References': false
+            Resource: "*"
+          - Effect: Allow
+            Action: 
+              - codebuild:StartBuild*
+              - codebuild:StopBuild*
+              - codebuild:BatchGet*
+              - codebuild:GetResourcePolicy*
+              - codebuild:DescribeTestCases*
+              - codebuild:List*
+              - cloudwatch:GetMetricStatistics
+              - events:DescribeRule
+              - events:ListTargetsByRule
+              - logs:GetLogEvents
+              - s3:GetBucketLocation
+              - s3:ListAllMyBuckets
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action: 
+              - ssm:PutParameter
+            Resource:
+              - arn:aws:ssm:*:*:parameter/CodeBuild/*
+      Roles:
+        - !Ref DevAccountRole
+      Users:
+        - !ImportValue DevAccountUser
+
+Outputs:
+  DevAccountRole:
+    Value: !Ref DevAccountRole
+    Export: 
+      Name: DevAccountRole

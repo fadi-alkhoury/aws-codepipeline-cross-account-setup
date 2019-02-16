@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a CMK in KMS and grants access to other accounts
+Parameters:
+  DevAccount:
+    Description: AWS AccountNumber for dev
+    Type: Number
+  TestAccount:
+    Description: AWS AccountNumber for test
+    Type: Number
+  ProdAccount:
+    Description: AWS AccountNumber for production
+    Type: Number
+  ExternPipelineAccessRoleName:
+    Type: String
+  CloudformationDeployerRoleName:
+    Type: String
+    
+
+Resources:
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Used by Assumed Roles in Dev/Test/Prod accounts to Encrypt/Decrypt code
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Ref AWS::StackName
+        Statement:
+          - Sid: Allows admin of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - "kms:Create*"
+              - "kms:Describe*"
+              - "kms:Enable*"
+              - "kms:List*"
+              - "kms:Put*"
+              - "kms:Update*"
+              - "kms:Revoke*"
+              - "kms:Disable*"
+              - "kms:Get*"
+              - "kms:Delete*"
+              - "kms:ScheduleKeyDeletion"
+              - "kms:CancelKeyDeletion"
+            Resource: "*"
+          - Sid: Allow use of the key for CryptoGraphy Lambda
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${ProdAccount}:root
+                - !Sub arn:aws:iam::${TestAccount}:root
+                - !Sub arn:aws:iam::${DevAccount}:root
+                - !Sub arn:aws:iam::${AWS::AccountId}:user/admin
+                - !Sub arn:aws:iam::${TestAccount}:role/${ExternPipelineAccessRoleName}
+                - !Sub arn:aws:iam::${ProdAccount}:role/${ExternPipelineAccessRoleName}
+                - !Sub arn:aws:iam::${ProdAccount}:role/${CloudformationDeployerRoleName}
+                - !Sub arn:aws:iam::${TestAccount}:role/${CloudformationDeployerRoleName}
+                - !GetAtt [CodeCommitRole,Arn]
+                - !GetAtt [BuildProjectRole,Arn]
+                - !GetAtt [PipelineRole,Arn]
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+
+  KMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/codepipeline-crossaccounts
+      TargetKeyId: !Ref KMSKey
+      
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties: 
+      BucketName: my-pipeline-artifacts  # replace with your intended bucket name
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:*
+            Effect: Allow
+            Resource:
+              - !Sub arn:aws:s3:::${ArtifactBucket}
+              - !Sub arn:aws:s3:::${ArtifactBucket}/*
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${ProdAccount}:root
+                - !Sub arn:aws:iam::${TestAccount}:root
+                - !Sub arn:aws:iam::${DevAccount}:root
+                - !Sub arn:aws:iam::${TestAccount}:user/admin
+                - !Sub arn:aws:iam::${ProdAccount}:user/admin
+                - !Sub arn:aws:iam::${AWS::AccountId}:user/admin
+                - !Sub arn:aws:iam::${TestAccount}:role/${ExternPipelineAccessRoleName}
+                - !Sub arn:aws:iam::${ProdAccount}:role/${ExternPipelineAccessRoleName}
+                - !Sub arn:aws:iam::${TestAccount}:role/${CloudformationDeployerRoleName}
+                - !Sub arn:aws:iam::${ProdAccount}:role/${CloudformationDeployerRoleName}
+                - !GetAtt [CodeCommitRole,Arn]
+                - !GetAtt [BuildProjectRole,Arn]
+                - !GetAtt [PipelineRole,Arn]
+
+  CodeCommitRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: code_commit_role
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - sts:AssumeRole
+
+  CodeCommitPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: code_commit_policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - codecommit:BatchGetRepositories
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:List*
+              - codecommit:CancelUploadArchive
+              - codecommit:UploadArchive
+              - s3:*
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - kms:*
+            Resource: !GetAtt [KMSKey,Arn]
+      Roles:
+        - !Ref CodeCommitRole
+  
+  BuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: build_project_role
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  BuildProjectPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: build_project_policy
+      Roles:
+        - !Ref BuildProjectRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - ecr:*
+              - dynamodb:GetItem
+              - dynamodb:UpdateItem
+              - codecommit:Get*
+              - codecommit:MergeBranches*
+              - codecommit:DeleteBranch
+              - cloudformation:CreateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:SetStackPolicy
+              - cloudformation:ValidateTemplate
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+              - kms:*
+            Resource: !GetAtt [KMSKey,Arn]
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
+              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource:
+              - !GetAtt [CodeCommitRole,Arn]
+              - !Sub arn:aws:iam::${ProdAccount}:role/${ExternPipelineAccessRoleName}
+              - !Sub arn:aws:iam::${TestAccount}:role/${ExternPipelineAccessRoleName}
+    
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pipeline_role
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  PipelinePolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: S3BucketPolicy
+    Properties:
+      PolicyName: pipeline_policy
+      Roles:
+        - !Ref PipelineRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - codepipeline:*
+              - iam:ListRoles
+              - iam:PassRole
+              - cloudformation:Describe*
+              - cloudFormation:List*
+              - codecommit:List*
+              - codecommit:Get*
+              - codecommit:GitPull
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - cloudformation:CreateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:SetStackPolicy
+              - cloudformation:ValidateTemplate
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: !GetAtt [KMSKey,Arn]
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket, '/*']]
+              - !Join ['',['arn:aws:s3:::',!Ref ArtifactBucket]]
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource:
+              - !GetAtt [CodeCommitRole,Arn]
+              - !Sub arn:aws:iam::${ProdAccount}:role/${ExternPipelineAccessRoleName}
+              - !Sub arn:aws:iam::${TestAccount}:role/${ExternPipelineAccessRoleName}
+
+  CloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: cwe_pipeline_execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:*
+
+
+Outputs:
+  KmsKeyArn:
+    Value: !GetAtt [KMSKey,Arn]
+    Export: 
+      Name: KmsKeyArn
+  ArtifactBucket:
+    Value: !Ref ArtifactBucket
+    Export: 
+      Name: ArtifactBucket
+  BuildProjectRoleArn:
+    Value: !GetAtt [BuildProjectRole,Arn]
+    Export: 
+      Name: BuildProjectRoleArn
+  CodeCommitRoleArn:
+    Value: !GetAtt [CodeCommitRole,Arn]
+    Export: 
+      Name: CodeCommitRoleArn
+  PipelineRoleArn:
+    Value: !GetAtt [PipelineRole,Arn]
+    Export: 
+      Name: PipelineRoleArn
+  CloudWatchEventRoleArn:
+    Value: !GetAtt [CloudWatchEventRole,Arn]
+    Export: 
+      Name: CloudWatchEventRoleArn
